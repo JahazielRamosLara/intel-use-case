@@ -5,7 +5,8 @@
 #==============================================================================
 # Uso: bash deploy.sh
 # Descripción: Automatiza el despliegue completo de la Online Boutique
-#              en GKE junto con el stack de monitoreo.
+#              en GKE junto con el stack de monitoreo. Instala automáticamente
+#              las dependencias si no están presentes.
 #==============================================================================
 
 set -e  # El script se detiene si algún comando falla
@@ -67,35 +68,129 @@ wait_for_pods() {
     return 1
 }
 
+install_gcloud() {
+    log_info "Instalando Google Cloud SDK..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        if command -v brew &> /dev/null; then
+            brew install --cask google-cloud-sdk
+        else
+            log_error "Homebrew no está instalado. Instala Homebrew primero: https://brew.sh"
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux
+        curl https://sdk.cloud.google.com | bash
+        exec -l $SHELL
+    else
+        log_error "Sistema operativo no soportado para instalación automática. Instala gcloud manualmente: https://cloud.google.com/sdk/docs/install"
+    fi
+    log_success "gcloud instalado"
+}
+
+install_kubectl() {
+    log_info "Instalando kubectl..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        if command -v brew &> /dev/null; then
+            brew install kubectl
+        else
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+    fi
+    log_success "kubectl instalado"
+}
+
+install_helm() {
+    log_info "Instalando Helm..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        if command -v brew &> /dev/null; then
+            brew install helm
+        else
+            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    fi
+    log_success "Helm instalado"
+}
+
+install_git() {
+    log_info "Instalando Git..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        if command -v brew &> /dev/null; then
+            brew install git
+        else
+            log_error "Homebrew no está instalado. Instala Homebrew primero: https://brew.sh"
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y git
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y git
+        else
+            log_error "No se pudo detectar el gestor de paquetes. Instala git manualmente."
+        fi
+    fi
+    log_success "Git instalado"
+}
+
+#------------------------------------------------------------------------------
+# PASO 0: Instalar dependencias si no están presentes
+#------------------------------------------------------------------------------
+install_dependencies() {
+    log_info "=== PASO 0: Verificando e instalando dependencias ==="
+    
+    # Verificar gcloud
+    if ! command -v gcloud &> /dev/null; then
+        log_warn "gcloud no encontrado. Instalando..."
+        install_gcloud
+    else
+        log_success "gcloud encontrado"
+    fi
+
+    # Verificar kubectl
+    if ! command -v kubectl &> /dev/null; then
+        log_warn "kubectl no encontrado. Instalando..."
+        install_kubectl
+    else
+        log_success "kubectl encontrado"
+    fi
+
+    # Verificar helm
+    if ! command -v helm &> /dev/null; then
+        log_warn "helm no encontrado. Instalando..."
+        install_helm
+    else
+        log_success "helm encontrado"
+    fi
+
+    # Verificar git
+    if ! command -v git &> /dev/null; then
+        log_warn "git no encontrado. Instalando..."
+        install_git
+    else
+        log_success "git encontrado"
+    fi
+
+    echo ""
+}
+
 #------------------------------------------------------------------------------
 # PASO 1: Verificar prerrequisitos
 #------------------------------------------------------------------------------
 check_prerequisites() {
-    log_info "=== PASO 1: Verificando prerrequisitos ==="
-
-    # Verificar gcloud
-    if ! command -v gcloud &> /dev/null; then
-        log_error "gcloud no está instalado. Instálalo en: https://cloud.google.com/sdk/docs/install"
-    fi
-    log_success "gcloud encontrado"
-
-    # Verificar kubectl
-    if ! command -v kubectl &> /dev/null; then
-        log_error "kubectl no está instalado. Instálalo en: https://kubernetes.io/docs/tasks/tools/"
-    fi
-    log_success "kubectl encontrado"
-
-    # Verificar helm
-    if ! command -v helm &> /dev/null; then
-        log_error "helm no está instalado. Instálalo en: https://helm.sh/docs/intro/install/"
-    fi
-    log_success "helm encontrado"
-
-    # Verificar git
-    if ! command -v git &> /dev/null; then
-        log_error "git no está instalado. Instálalo en: https://git-scm.com/downloads"
-    fi
-    log_success "git encontrado"
+    log_info "=== PASO 1: Verificando proyecto GCP ==="
 
     # Verificar que el proyecto GCP existe
     if ! gcloud projects describe "$PROJECT_ID" &> /dev/null; then
@@ -106,6 +201,7 @@ check_prerequisites() {
     # Configurar el proyecto activo
     gcloud config set project "$PROJECT_ID"
     log_success "Proyecto activo configurado"
+    echo ""
 }
 
 #------------------------------------------------------------------------------
@@ -127,18 +223,16 @@ create_cluster() {
             --num-nodes="$NUM_NODES" \
             --machine-type="$MACHINE_TYPE" \
             --disk-size="$DISK_SIZE" \
-            --project="$PROJECT_ID"
+            --project="$PROJECT_ID" || log_error "Falló la creación del clúster. Revisa la cuota de tu proyecto."
 
         log_success "Clúster creado exitosamente"
     fi
 
     # Conectar kubectl al clúster
     log_info "Conectando kubectl al clúster..."
-    gcloud container clusters get-credentials "$CLUSTER_NAME" \
-        --zone="$ZONE" \
-        --project="$PROJECT_ID"
-
+    gcloud container clusters get-credentials "$CLUSTER_NAME" --zone="$ZONE" --project="$PROJECT_ID"
     log_success "kubectl conectado al clúster"
+    echo ""
 }
 
 #------------------------------------------------------------------------------
@@ -158,138 +252,117 @@ deploy_boutique() {
 
     cd "$REPO_DIR"
 
-    # Reducir recursos del loadgenerator para que pueda correr en el clúster
+    # Ajustar recursos del loadgenerator
     log_info "Ajustando recursos del loadgenerator..."
-    sed -i 's/cpu: 300m/cpu: 50m/g' kustomize/base/loadgenerator.yaml
-    sed -i 's/memory: 256Mi/memory: 64Mi/g' kustomize/base/loadgenerator.yaml
-    sed -i 's/cpu: 500m/cpu: 100m/g' kustomize/base/loadgenerator.yaml
-    sed -i 's/memory: 512Mi/memory: 128Mi/g' kustomize/base/loadgenerator.yaml
+    sed -i.bak 's/cpu: 300m/cpu: 50m/g; s/memory: 256Mi/memory: 64Mi/g; s/cpu: 500m/cpu: 100m/g; s/memory: 512Mi/memory: 128Mi/g' \
+        kustomize/base/loadgenerator.yaml
 
-    # Reducir requests de CPU de todos los servicios para evitar insuficiencia de recursos
+    # Ajustar recursos de los demás servicios
     log_info "Ajustando recursos de los servicios..."
     for file in kustomize/base/*.yaml; do
-        sed -i '/requests:/,/memory:/{s/cpu: [0-9]*m/cpu: 50m/}' "$file"
+        # Cambiar los CPU requests a 50m y limits a 100m
+        sed -i.bak '/requests:/,/cpu:/ s/cpu: [0-9]*m/cpu: 50m/; /limits:/,/cpu:/ s/cpu: [0-9]*m/cpu: 100m/' "$file"
     done
 
-    # Desplegar usando kustomize
+    # Desplegar
     log_info "Desplegando Online Boutique..."
-    kubectl apply -k ./kustomize/
+    kubectl apply -k ./kustomize/ || log_error "Falló el despliegue de la Online Boutique"
 
-    # Esperar a que los pods estén listos (12 pods en total)
     wait_for_pods "default" 12
-
+    echo ""
     cd ..
 }
 
 #------------------------------------------------------------------------------
-# PASO 4: Instalar Prometheus + Grafana (monitoreo)
+# PASO 4: Instalar Prometheus + Grafana
 #------------------------------------------------------------------------------
 install_monitoring() {
     log_info "=== PASO 4: Instalando stack de monitoreo ==="
 
-    # Crear namespace de monitoreo
+    # Crear namespace de monitoreo si no existe
     kubectl create namespace "$MONITORING_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
-    # Agregar repositorio de Helm de prometheus-community
+    # Agregar repositorio de Helm
     log_info "Agregando repositorio de Helm..."
-    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
     helm repo update
 
-    # Instalar kube-prometheus-stack (incluye Prometheus + Grafana)
+    # Instalar kube-prometheus-stack si no está instalado
     if helm list -n "$MONITORING_NAMESPACE" | grep -q "prometheus"; then
         log_warn "Prometheus ya está instalado. Se salta la instalación."
     else
         log_info "Instalando kube-prometheus-stack..."
         helm install prometheus prometheus-community/kube-prometheus-stack \
-            --namespace "$MONITORING_NAMESPACE"
+            --namespace "$MONITORING_NAMESPACE" || log_error "Falló la instalación de Prometheus"
         log_success "kube-prometheus-stack instalado"
     fi
 
-    # Exponer Grafana con IP pública (LoadBalancer)
+    # Exponer Grafana con IP pública
     log_info "Exponiendo Grafana con IP pública..."
     kubectl patch service prometheus-grafana \
         --namespace "$MONITORING_NAMESPACE" \
-        -p '{"spec":{"type":"LoadBalancer"}}'
+        -p '{"spec":{"type":"LoadBalancer"}}' 2>/dev/null || log_warn "Grafana ya está expuesto"
 
-    # Esperar a que el LoadBalancer tenga IP externa
     log_info "Esperando IP externa de Grafana..."
-    local timeout=120
-    local elapsed=0
-    while [ $elapsed -lt $timeout ]; do
-        GRAFANA_IP=$(kubectl get service prometheus-grafana \
-            --namespace "$MONITORING_NAMESPACE" \
-            -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null)
-        if [ -n "$GRAFANA_IP" ]; then
-            break
-        fi
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
-
-    if [ -z "$GRAFANA_IP" ]; then
-        log_warn "No se pudo obtener la IP de Grafana automáticamente."
-    fi
+    sleep 30
+    echo ""
 }
 
 #------------------------------------------------------------------------------
-# PASO 5: Obtener información de acceso
+# PASO 5: Mostrar información de acceso
 #------------------------------------------------------------------------------
-print_access_info() {
+show_access_info() {
     log_info "=== PASO 5: Información de acceso ==="
-
-    # IP del frontend de la Online Boutique
-    FRONTEND_IP=$(kubectl get service frontend-external \
-        -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null)
-
-    # IP de Grafana
-    GRAFANA_IP=$(kubectl get service prometheus-grafana \
-        --namespace "$MONITORING_NAMESPACE" \
-        -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null)
-
-    # Contraseña de Grafana (codificada en base64)
-    GRAFANA_PASS_B64=$(kubectl get secret prometheus-grafana \
-        --namespace "$MONITORING_NAMESPACE" \
-        -o jsonpath="{.data.admin-password}" 2>/dev/null)
-
     echo ""
-    echo -e "${GREEN}============================================================${NC}"
-    echo -e "${GREEN}  DESPLIEGUE COMPLETADO EXITOSAMENTE${NC}"
-    echo -e "${GREEN}============================================================${NC}"
+
+    # Obtener IP del frontend
+    FRONTEND_IP=$(kubectl get service frontend-external -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pendiente")
+
+    # Obtener IP de Grafana
+    GRAFANA_IP=$(kubectl get service prometheus-grafana --namespace "$MONITORING_NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pendiente")
+
+    # Obtener contraseña de Grafana (en base64)
+    GRAFANA_PASS=$(kubectl get secret prometheus-grafana --namespace "$MONITORING_NAMESPACE" -o jsonpath='{.data.admin-password}' 2>/dev/null || echo "")
+
+    # Mostrar información
+    echo "============================================================"
+    echo "  DESPLIEGUE COMPLETADO EXITOSAMENTE"
+    echo "============================================================"
     echo ""
-    echo -e "  ${BLUE}Online Boutique:${NC}"
+    echo "  Online Boutique:"
     echo "    URL: http://$FRONTEND_IP"
     echo ""
-    echo -e "  ${BLUE}Grafana (Dashboard de métricas):${NC}"
+    echo "  Grafana (Dashboard de métricas):"
     echo "    URL: http://$GRAFANA_IP"
     echo "    Usuario: admin"
-    echo "    Contraseña (base64): $GRAFANA_PASS_B64"
+    echo "    Contraseña (base64): $GRAFANA_PASS"
     echo "    (Decodifica la contraseña manualmente con base64)"
     echo ""
-    echo -e "  ${BLUE}Queries recomendadas en Grafana:${NC}"
+    echo "  Queries recomendadas en Grafana:"
     echo "    CPU por pod:"
     echo "      sum(rate(container_cpu_usage_seconds_total{namespace=\"default\"}[5m])) by (pod)"
     echo "    Memoria por pod:"
     echo "      sum(container_memory_working_set_bytes{namespace=\"default\"}) by (pod)"
     echo ""
-    echo -e "${GREEN}============================================================${NC}"
+    echo "============================================================"
 }
 
 #------------------------------------------------------------------------------
-# MAIN: Ejecución principal del script
+# MAIN - Flujo principal del script
 #------------------------------------------------------------------------------
 main() {
-    echo ""
-    echo -e "${BLUE}============================================================${NC}"
-    echo -e "${BLUE}  Intel DevOps Assessment - Automatización de Despliegue${NC}"
-    echo -e "${BLUE}============================================================${NC}"
+    echo "============================================================"
+    echo "  Intel DevOps Assessment - Automatización de Despliegue"
+    echo "============================================================"
     echo ""
 
+    install_dependencies
     check_prerequisites
     create_cluster
     deploy_boutique
     install_monitoring
-    print_access_info
+    show_access_info
 }
 
-# Ejecutar
+# Ejecutar función principal
 main
