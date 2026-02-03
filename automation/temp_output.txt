@@ -1,0 +1,5 @@
+createTime: '2026-02-01T00:00:07.650753Z'
+lifecycleState: ACTIVE
+name: intel-boutique-demo
+projectId: intel-boutique-demo
+projectNumber: '312341254199'
